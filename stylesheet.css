@@ -1,0 +1,41 @@
+
+*{
+    border-color: white;
+}
+
+QFrame#frameLogos{
+	background-color: #ffffff;
+}
+
+QFrame#frameMain{
+	background-color: #ffffff;
+}
+
+
+QLabel#lblLogo
+{
+    font-size:24px;
+    background-color: white;
+
+}
+
+QLabel#lblTitle1, QLabel#lblTitle2
+{
+    font-size:24px;
+	color: #033a8b;
+}
+
+QLabel#lblImage
+{
+    background-color: black;
+    border: 1px solid white;
+}
+
+QPlainTextEdit#txtLog
+{
+    background-color: black;
+    color: white;
+    font-size:16px;
+
+    border: 1px solid white;
+}
