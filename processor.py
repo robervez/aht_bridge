@@ -4,18 +4,21 @@ import configparser
 import time
 from utils_AHT import AHT,geturlFromSrcdef
 
-from detectors import TinyFace
+ # from detectors import TinyFace
 
 
 class FaceDetector():
     def __init__(self):
         # DET2 = FaceBoxes(device='cuda')
-        self.det = TinyFace(device='cuda')
+        # self.det = TinyFace(device='cuda')
+        pass
 
     def __containFace(self, image):
         print("check face")
         #cv2.imshow('input',image)
         #cv2.waitKey(1)
+        return False
+
         bboxes = self.det.detect_faces(image, conf_th=0.7, scales=[1])
         for box in bboxes:
             x1, y1, x2, y2, conf = box

@@ -15,6 +15,7 @@ from ahtInterface import AhtInterface, AhtApp
 
 
 #imgSize = 79056
+headerlength=3
 sizes=[(320,244),(320,256), (320,240)]
 imgSizes= [ el[0]*el[1] for el in sizes ]
 minsize=min(imgSizes)
@@ -48,6 +49,20 @@ class UDP_Server(threading.Thread):
         self.stopped = False
 
         self.chrid = 0
+
+        self.databufferG = []
+        self.lastindexG = -1
+        self.ErrorG = False
+
+        self.databufferRGB = []
+        self.lastindexRGB = -1
+        self.ErrorRGB = False
+
+        self.databufferHM = []
+        self.lastindexHM = -1
+        self.ErrorHM = False
+
+
 
     def Stop(self):
         self.stopped = True
@@ -88,11 +103,214 @@ class UDP_Server(threading.Thread):
         data = data[0:(f[0][1])]
         return data
 
+    def getinfo(self,data):
+        errno=0
+        if len(data) != self.PACKET_LEN:
+            errno = 1
+
+        index = data[0] + (data[1]) * 256
+        packettype = data[2]
+
+        return index, packettype,errno
+
+    def processHeatmaps(self,data, index):
+
+        # reset errori
+        if index==0:
+            self.ErrorHM = False
+
+        if self.ErrorHM:
+            return False
+
+        self.databufferHM.extend(data[3:])
+
+        # ultimo index: fine hm: le uso
+        if index == 65535:
+            self.logger.Log("data received via UDP of type Heatmaps")
+            sizewhm = 80
+            sizehhm = 64
+            sizehm = sizewhm * sizehhm
+
+            imgHM1 = np.array(self.databufferHM[headerlength:headerlength+sizehm]).reshape(sizehhm, sizewhm).copy().astype(np.uint8)
+            imgHM2 = np.array(self.databufferHM[headerlength+sizehm:headerlength+2 * sizehm]).reshape(sizehhm, sizewhm).copy().astype(np.uint8)
+            imgSZ = np.array(self.databufferHM[headerlength+2 * sizehm:headerlength+3 * sizehm]).reshape(sizehhm, sizewhm).copy().astype(
+                np.uint8)
+
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 100]
+            result, encimg1 = cv2.imencode('.jpg', imgHM1, encode_param)
+            result, encimg2 = cv2.imencode('.jpg', imgHM2, encode_param)
+            result, encimg3 = cv2.imencode('.jpg', imgSZ, encode_param)
+
+            # send raw img to JPEG task
+            imgs = []
+            imgs.append(self.folder)
+            imgs.append(encimg1)
+            self.q.put(imgs)
+            imgs = []
+            imgs.append(self.folder)
+            imgs.append(encimg2)
+            self.q.put(imgs)
+            imgs = []
+            imgs.append(self.folder)
+            imgs.append(encimg3)
+            self.q.put(imgs)
+            self.databufferHM = []
+            self.lastindexHM = -1
+
+        else:
+            # check indice in sequenza
+            if self.lastindexHM + 1 != index:
+                print("ERROR SEQUENCE")
+                self.ErrorHM = True
+
+            self.lastindexHM = index
+
+        return True
+
+    def processMessage(self, data):
+        self.logger.Log("data received via UDP of type String")
+        mystr = ""
+        for i in range(3,len(data)):
+            if data[i]==0:
+                break
+            mystr += chr(data[i])
+
+        self.logger.Log(str(mystr))
+        return True
+
+
+    def processGrayImagePacket(self,data, index):
+
+        if index == 0:
+            self.ErrorG = False
+
+        if self.ErrorG:
+            return False
+
+        self.databufferG.extend(data[3:])
+
+        # ultimo index: fine immagine: la uso
+        if index == 65535:
+
+            if self.databufferG[0:2] == [0xFF, 0xD8]:
+                # jpeg received
+                data_buffer = self.resise_jpg_pkt(self.databufferG)
+                print("UDP" + self.folder + ": " + 'Img len: ', len(data_buffer), flush=True)
+                imgs = []
+                self.logger.Log("Jpeg Image received via UDP")
+                # send raw img to JPEG task
+                imgs.append(self.folder)
+                imgs.append(data_buffer)
+                self.q.put(imgs)
+
+            else:
+                # raw image received
+
+                # image size selected by type
+                if not (len(self.databufferG) >= minsize and len(self.databufferG) in buflens):
+                    print("ERROR")
+                    self.ErrorG=True
+
+                wimg, himg = sizes[buflens.index(len(self.databufferG))]
+                grayImage = np.array(self.databufferG[0:wimg * himg]).reshape(himg, wimg).copy().astype(np.uint8)
+
+                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 100]
+                result, encimg = cv2.imencode('.jpg', grayImage, encode_param)
+                print("UDP" + self.folder + ": " + 'Img len: ', len(encimg), flush=True)
+                imgs = []
+                self.logger.Log("Raw image received via UDP of size {}x{}".format(wimg, himg))
+                # send raw img to JPEG task
+                imgs.append(self.folder)
+                imgs.append(encimg)
+                self.q.put(imgs)
+                self.databufferG = []
+                self.lastindexG = -1
+        else:
+            # check indice in sequenza
+            if self.lastindexG  +1 != index:
+                print("ERROR SEQUENCE G: {} instead of{} ".format(index, self.lastindexG+1))
+                self.ErrorG=True
+
+            self.lastindexG = index
+
+        return True
+
+    def processRGBImagePacket(self, data, index):
+
+        if index == 0:
+            self.ErrorRGB = False
+
+        if self.ErrorRGB:
+            return False
+
+        self.databufferRGB.extend(data[3:])
+
+        # ultimo index: fine immagine: la uso
+        if index == 65535:
+            wimg = 320
+            himg = 256
+
+            imgch1 = np.array(self.databufferRGB[0:wimg * himg]).reshape(himg, wimg).copy().astype(np.uint8)
+            imgch2 = np.array(self.databufferRGB[wimg * himg:wimg * himg * 2]).reshape(himg, wimg).copy().astype(
+                np.uint8)
+            imgch3 = np.array(self.databufferRGB[wimg * himg * 2:wimg * himg * 3]).reshape(himg, wimg).copy().astype(
+                np.uint8)
+
+            imgRGB = cv2.merge((imgch1, imgch2, imgch3))
+
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 100]
+
+            result2, encimg2 = cv2.imencode('.jpg', imgRGB, encode_param)
+
+            # send raw img to JPEG task
+            imgs = []
+            imgs.append(self.folder)
+            imgs.append(encimg2)
+            self.q.put(imgs)
+            self.databufferRGB = []
+            self.lastindexRGB = -1
+        else:
+
+            # check indice in sequenza
+            if self.lastindexRGB +1 != index:
+                print("ERROR SEQUENCE RGB: {} instead of{} ".format(index, self.lastindexRGB+1))
+                self.ErrorRGB=True
+
+            self.lastindexRGB = index
+
+
+        return True
+
+
+
+    def processPacket(self, data):
+
+        #print("UDP" + self.folder + ": " + 'Data Packet len: ', len(data), flush=True)
+        index, packettype, errno =self.getinfo(data)
+        #print("index, packettype, errno: ", index, packettype, errno, flush=True)
+
+        # use packet based on type
+        if packettype == 0:
+            return self.processGrayImagePacket(data,index)
+
+        if packettype == 1:
+            return self.processMessage(data)
+
+        if packettype == 2:
+            # heatmaps
+            return self.processHeatmaps(data, index)
+
+        if packettype==3:
+            return self.processRGBImagePacket (data, index)
+
+        return False
+
 
     def get_from_wifi(self):
         self.sock.settimeout(3)
-        data_buffer = []
-        next_id = 0
+
+        self.data_buffer = []
+        self.next_id = 0
 
         while not self.stopped:
             try:
@@ -101,133 +319,9 @@ class UDP_Server(threading.Thread):
                 print(".",end='')
                 continue
 
-            #print("UDP" + self.folder + ": " + 'Data Packet len: ', len(data), flush=True)
-            # print ("UDP" + self.folder + ": " + 'Data Packet: ', str(data), flush=True)
+            self.processPacket(data)
 
-            if len(data) != self.PACKET_LEN:
-               print ("UDP" + self.folder + ": " + '[ERROR] Data Packet len: ', len(data), ' instead of max ',
-                          self.PACKET_LEN, flush=True)
 
-            index = data[0] + (data[1]) * 256
-            packettype = data[2]
-            #print('Sync Buffering: {} of type {}'.format(index,packettype))
-
-            if index == 0:
-                data_buffer = []
-                next_id = 0
-                print("New index of data received via UDP...")
-            # add current data to buffer
-            data_buffer.extend(data[3:])
-
-            try:
-
-                if (index not in [0, 65535, next_id+1]):
-                    self.logger.Log("packet out of sequence")
-
-                if index == 65535:
-                    # in base al tipo di dato
-                    if packettype==1:
-                        self.logger.Log("data received via UDP of type {}".format(packettype))
-                        mystr=""
-                        for car in data_buffer[0:data_buffer.index(0)]:
-                            mystr += chr(car)
-
-                        self.logger.Log(str(mystr))
-                        continue
-                    if packettype==2:
-                        self.logger.Log("data received via UDP of type {}".format(packettype))
-                        sizewhm = 80
-                        sizehhm = 64
-                        sizehm = sizewhm * sizehhm
-
-                        imgHM1 = np.array(data_buffer[0:sizehm]).reshape(sizehhm, sizewhm).copy().astype(np.uint8)
-                        imgHM2 = np.array(data_buffer[sizehm :2* sizehm]).reshape(sizehhm, sizewhm).copy().astype(np.uint8)
-                        imgSZ = np.array(data_buffer[2*sizehm :3*sizehm ]).reshape(sizehhm, sizewhm).copy().astype(np.uint8)
-
-                        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 100]
-                        result, encimg1 = cv2.imencode('.jpg', imgHM1, encode_param)
-                        result, encimg2 = cv2.imencode('.jpg', imgHM2, encode_param)
-                        result, encimg3 = cv2.imencode('.jpg', imgSZ, encode_param)
-
-                        # send raw img to JPEG task
-                        imgs = []
-                        imgs.append(self.folder)
-                        imgs.append(encimg1)
-                        self.q.put(imgs)
-                        imgs = []
-                        imgs.append(self.folder)
-                        imgs.append(encimg2)
-                        self.q.put(imgs)
-                        imgs = []
-                        imgs.append(self.folder)
-                        imgs.append(encimg3)
-                        self.q.put(imgs)
-
-                        continue
-                    if packettype == 3:
-                        self.logger.Log("data received via UDP of type {}".format(packettype))
-
-                        wimg = 320
-                        himg = 256
-
-                        imgch1 = np.array(data_buffer[0:wimg * himg]).reshape(himg, wimg).copy().astype(np.uint8)
-                        imgch2 = np.array(data_buffer[wimg * himg:wimg * himg*2]).reshape(himg, wimg).copy().astype(np.uint8)
-                        imgch3 = np.array(data_buffer[wimg * himg*2:wimg * himg*3]).reshape(himg, wimg).copy().astype(np.uint8)
-
-                        imgRGB = cv2.merge((imgch1,imgch2,imgch3))
-
-                        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 100]
-
-                        result2, encimg2 = cv2.imencode('.jpg', imgRGB, encode_param)
-
-                        # send raw img to JPEG task
-                        imgs = []
-                        imgs.append(self.folder)
-                        imgs.append(encimg2)
-                        self.q.put(imgs)
-
-                        continue
-
-                    # I suppose a new IMG!
-                    print ('New Img len: ', len(data_buffer))
-                    if len(data_buffer) > 3:
-                        # check header type
-                        if data_buffer[0:2]==[0xFF,0xD8]:
-                            # jpeg received
-                            data_buffer = self.resise_jpg_pkt(data_buffer)
-                            print("UDP" + self.folder + ": " + 'Img len: ', len(data_buffer), flush=True)
-                            imgs = []
-                            self.logger.Log("Jpeg Image received via UDP")
-                            # send raw img to JPEG task
-                            imgs.append(self.folder)
-                            imgs.append(data_buffer)
-                            self.q.put(imgs)
-                        elif len(data_buffer)>=minsize and len(data_buffer) in buflens:
-                            # raw image received
-                            (imgW,imgH) = sizes[buflens.index(len(data_buffer))]
-
-                            grayImage = np.array(data_buffer[0:imgW*imgH]).reshape(imgH, imgW).copy().astype(np.uint8)
-
-                            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 100]
-                            result, encimg = cv2.imencode('.jpg', grayImage, encode_param)
-                            print("UDP" + self.folder + ": " + 'Img len: ', len(encimg), flush=True)
-                            imgs = []
-                            self.logger.Log("Raw image received via UDP of size {}x{}".format(imgW,imgH))
-                            # send raw img to JPEG task
-                            imgs.append(self.folder)
-                            imgs.append(encimg)
-                            self.q.put(imgs)
-                        else:
-                                print("UDP" + self.folder + ": " + 'Error Img corrupted', flush=True)
-                    data_buffer = [] # buffer cleaning after end packet
-
-    
-                next_id = index
-            except:
-                #  in caso di eccezione, vuoto tutto il buffer e riparto
-                print("ERRORE - ECCEZIONE")
-                data_buffer = []  # buffer cleaning after end packet
-                next_id = 0
 
 
 
